@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code Session Tracker</title>
+<style>
+  :root {
+    --bg: #14161a; --card: #1d2026; --line: #2c313a;
+    --text: #e6e8ec; --dim: #8b91a0; --faint: #5b616e;
+    --wait: #ffcc44; --stall: #ff6b6b; --stuck: #c98b4a; --active: #4a9d6e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text); padding: 28px 20px 60px;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 760px; margin: 0 auto;
+  }
+  header { margin-bottom: 22px; }
+  h1 { font-size: 15px; font-weight: 600; color: var(--dim); }
+  .headline { font-size: 24px; font-weight: 650; margin-top: 4px; }
+  .updated { font-size: 12px; color: var(--faint); margin-top: 2px; }
+
+  .group { margin-top: 26px; }
+  .group-title {
+    font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--dim); margin-bottom: 8px;
+  }
+  .group-note { font-size: 12px; color: var(--faint); margin: -4px 0 8px; }
+  .group.lowkey { opacity: .62; }
+
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 9px; padding: 12px 14px; margin-bottom: 8px;
+  }
+  .row.wait { border-left: 3px solid var(--wait); }
+  .row.stall { border-left: 3px solid var(--stall); }
+  .row.stuck { border-left: 3px solid var(--stuck); }
+  .row.active { border-left: 3px solid var(--active); }
+
+  .label { font-weight: 600; }
+  .meta { font-size: 12px; color: var(--dim); margin-top: 1px; }
+  .grow { flex: 1; min-width: 0; }
+  .time { font-variant-numeric: tabular-nums; color: var(--dim); font-size: 13px; }
+
+  button {
+    background: transparent; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 10px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { color: var(--text); border-color: var(--dim); }
+
+  .empty { color: var(--faint); margin-top: 30px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude Code Session Tracker</h1>
+  <div class="headline" id="headline">Loading…</div>
+  <div class="updated" id="updated"></div>
+</header>
+<main id="main"></main>
+
+<script>
+const GROUPS = [
+  { status: "waiting_on_you", cls: "wait",   title: "Waiting on you" },
+  { status: "likely_stalled", cls: "stall",  title: "Likely stalled" },
+  { status: "possibly_stuck", cls: "stuck",  title: "Possibly stuck",
+    note: "Quiet a while — may be busy in a long task, or stuck.", lowkey: true },
+  { status: "active",         cls: "active", title: "Active", lowkey: true },
+];
+
+function humanTime(s) {
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+async function markDone(sessionId) {
+  await fetch("/api/done", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+  refresh();
+}
+
+function rowEl(s, cls) {
+  const row = document.createElement("div");
+  row.className = "row " + cls;
+  row.innerHTML = `
+    <div class="grow">
+      <div class="label"></div>
+      <div class="meta"></div>
+    </div>
+    <div class="time">${humanTime(s.seconds_in_state)}</div>
+    <button>Mark done</button>`;
+  row.querySelector(".label").textContent = s.label;
+  row.querySelector(".meta").textContent =
+    s.cwd ? s.cwd : s.session_id.slice(0, 8);
+  row.querySelector("button").onclick = () => markDone(s.session_id);
+  return row;
+}
+
+async function refresh() {
+  let data;
+  try {
+    data = await (await fetch("/api/sessions")).json();
+  } catch (e) {
+    document.getElementById("headline").textContent = "Server unreachable";
+    return;
+  }
+  document.getElementById("headline").textContent = data.headline;
+  document.getElementById("updated").textContent =
+    "updated " + new Date(data.generated_at).toLocaleTimeString();
+
+  const main = document.getElementById("main");
+  main.innerHTML = "";
+
+  for (const g of GROUPS) {
+    const items = data.sessions.filter(s => s.status === g.status);
+    if (!items.length) continue;
+    const group = document.createElement("section");
+    group.className = "group" + (g.lowkey ? " lowkey" : "");
+    const title = document.createElement("div");
+    title.className = "group-title";
+    title.textContent = `${g.title} · ${items.length}`;
+    group.appendChild(title);
+    if (g.note) {
+      const note = document.createElement("div");
+      note.className = "group-note";
+      note.textContent = g.note;
+      group.appendChild(note);
+    }
+    for (const s of items) group.appendChild(rowEl(s, g.cls));
+    main.appendChild(group);
+  }
+
+  if (!data.sessions.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No sessions tracked yet. Open a Claude Code session.";
+    main.appendChild(empty);
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
