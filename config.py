@@ -21,6 +21,16 @@ MARKS_PATH = os.path.join(EVENTS_DIR, "marks.json")
 SHORT_SECONDS = 90
 LONG_SECONDS = 600
 
+# A turn_end younger than FRESH means Claude only just finished — you are
+# probably still looking at that tab, so it is NOT surfaced loudly. Once a
+# turn_end is older than FRESH, the session is genuinely waiting on you.
+FRESH_SECONDS = 600
+
+# "Engaged time" for a session: sum of adjacent-event intervals shorter than
+# this gap. Anything longer is treated as you-were-away idle and excluded.
+# A proxy, not exact — but it captures tool bursts and turn cycles honestly.
+ENGAGED_GAP_SECONDS = 600
+
 # Local dashboard server.
 HOST = "127.0.0.1"
 PORT = 8787

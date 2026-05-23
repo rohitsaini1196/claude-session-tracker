@@ -20,8 +20,9 @@ if REPO_ROOT not in sys.path:
 
 from config import HOST, PORT  # noqa: E402
 from server.events import events_by_session, read_events  # noqa: E402
-from server.marks import load_marks, mark_done  # noqa: E402
-from server.state import ACTIVE, WAITING_ON_YOU, derive_all  # noqa: E402
+from server.ide import open_workspaces  # noqa: E402
+from server.marks import load_marks, mark_done, unmark_done  # noqa: E402
+from server.state import WAITING_ON_YOU, derive_all  # noqa: E402
 
 DASHBOARD_HTML = os.path.join(REPO_ROOT, "dashboard", "index.html")
 
@@ -30,18 +31,17 @@ def build_payload():
     """Read the log, derive sessions, return the dashboard JSON payload."""
     grouped = events_by_session(read_events())
     marks = load_marks()
-    sessions = derive_all(grouped, marks)
+    sessions = derive_all(grouped, marks, open_ws=open_workspaces())
 
     counts = {}
     for session in sessions:
         counts[session["status"]] = counts.get(session["status"], 0) + 1
 
     waiting = counts.get(WAITING_ON_YOU, 0)
-    active = counts.get(ACTIVE, 0)
     if waiting:
         headline = f"{waiting} waiting on you"
     elif sessions:
-        headline = f"Nothing waiting — {active} active"
+        headline = f"Nothing waiting — {len(sessions)} session(s) tracked"
     else:
         headline = "No sessions tracked yet"
 
@@ -84,29 +84,43 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, b"not found", "text/plain")
 
-    def do_POST(self):
-        if self.path != "/api/done":
-            self._send(404, b"not found", "text/plain")
-            return
+    def _read_session_ids(self):
+        """Accept either {session_id: "x"} or {session_ids: ["a","b"]}."""
         length = int(self.headers.get("Content-Length", 0))
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
-            session_id = body["session_id"]
-        except (json.JSONDecodeError, KeyError, TypeError):
-            self._send_json(400, {"error": "session_id required"})
-            return
+        except json.JSONDecodeError:
+            return None
+        if "session_ids" in body and isinstance(body["session_ids"], list):
+            return [s for s in body["session_ids"] if isinstance(s, str)]
+        if isinstance(body.get("session_id"), str):
+            return [body["session_id"]]
+        return None
 
-        last_ts = last_event_ts_for(session_id)
-        if last_ts is None:
-            self._send_json(404, {"error": "unknown session_id"})
-            return
-
-        mark_done(
-            session_id,
-            last_event_ts=last_ts,
-            marked_at=datetime.now(timezone.utc).isoformat(),
-        )
-        self._send_json(200, {"ok": True})
+    def do_POST(self):
+        if self.path == "/api/done":
+            ids = self._read_session_ids()
+            if not ids:
+                self._send_json(400, {"error": "session_id(s) required"})
+                return
+            now = datetime.now(timezone.utc).isoformat()
+            done = []
+            for sid in ids:
+                last_ts = last_event_ts_for(sid)
+                if last_ts is None:
+                    continue  # unknown session — silently skip in bulk
+                mark_done(sid, last_event_ts=last_ts, marked_at=now)
+                done.append(sid)
+            self._send_json(200, {"ok": True, "done": done})
+        elif self.path == "/api/undo":
+            ids = self._read_session_ids()
+            if not ids:
+                self._send_json(400, {"error": "session_id(s) required"})
+                return
+            unmark_done(ids)
+            self._send_json(200, {"ok": True, "undone": ids})
+        else:
+            self._send(404, b"not found", "text/plain")
 
     def log_message(self, *args):
         pass  # quiet — this is a local single-user tool

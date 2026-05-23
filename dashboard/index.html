@@ -6,52 +6,216 @@
 <title>Claude Code Session Tracker</title>
 <style>
   :root {
-    --bg: #14161a; --card: #1d2026; --line: #2c313a;
-    --text: #e6e8ec; --dim: #8b91a0; --faint: #5b616e;
-    --wait: #ffcc44; --stall: #ff6b6b; --stuck: #c98b4a; --active: #4a9d6e;
+    /* Surfaces */
+    --bg:        #0e1014;
+    --card:      #171a20;
+    --card-hover:#1d2028;
+    --line:      #262b34;
+
+    /* Text — four tiers from strongest to ghost. */
+    --text:  #ebedf1;
+    --dim:   #98a0ae;
+    --faint: #5c6371;
+    --ghost: #3c4252;   /* paths, deepest recessive */
+
+    /* Statuses — distinct hues so they don't sit next to each other on the
+       spectrum. Active=emerald, recent=cool blue (no longer grey), waiting=
+       warm amber, stuck=orange, stalled=coral. */
+    --active: #10b981;
+    --fresh:  #6aa9f0;
+    --wait:   #f5b73b;
+    --stuck:  #ed8a3a;
+    --stall:  #ef6770;
+
+    /* Chips */
+    --chip:        #1a1e25;
+    --chip-active: #242a34;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: var(--bg); color: var(--text); padding: 28px 20px 60px;
+    background: var(--bg); color: var(--text);
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    max-width: 760px; margin: 0 auto;
+    max-width: 820px; margin: 0 auto; padding: 0 20px 80px;
   }
-  header { margin-bottom: 22px; }
-  h1 { font-size: 15px; font-weight: 600; color: var(--dim); }
-  .headline { font-size: 24px; font-weight: 650; margin-top: 4px; }
+
+  /* Sticky header stays visible as the list grows. */
+  header {
+    position: sticky; top: 0; z-index: 5;
+    background: var(--bg); padding: 20px 0 12px;
+    border-bottom: 1px solid var(--line); margin-bottom: 12px;
+  }
+  h1 { font-size: 13px; font-weight: 600; color: var(--dim); }
+  .headline { font-size: 22px; font-weight: 650; margin-top: 4px; }
   .updated { font-size: 12px; color: var(--faint); margin-top: 2px; }
 
-  .group { margin-top: 26px; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    align-items: center; margin-top: 12px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--chip); border: 1px solid transparent;
+    color: var(--text); font-size: 12px; font-weight: 500;
+    padding: 4px 10px; border-radius: 999px; cursor: pointer;
+    user-select: none;
+  }
+  .chip:hover { border-color: var(--line); }
+  .chip.on { background: var(--chip-active); border-color: var(--dim); }
+  .chip .dot {
+    width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+  }
+  .chip[data-st="active"]         .dot { background: var(--active); }
+  .chip[data-st="just_finished"]  .dot { background: var(--fresh); }
+  .chip[data-st="waiting_on_you"] .dot { background: var(--wait); }
+  .chip[data-st="possibly_stuck"] .dot { background: var(--stuck); }
+  .chip[data-st="likely_stalled"] .dot { background: var(--stall); }
+  .chip .n { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .chip.on .n { color: var(--text); }
+
+  .search {
+    margin-left: auto; flex: 1; min-width: 160px; max-width: 260px;
+    background: var(--chip); border: 1px solid transparent;
+    color: var(--text); font: inherit; font-size: 13px;
+    padding: 5px 10px; border-radius: 6px; outline: none;
+  }
+  .search:focus { border-color: var(--dim); }
+
+  /* Sections */
+  .group { margin-top: 22px; }
+  .group.lowkey { opacity: .7; }
+  .group-head {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 8px; cursor: pointer; user-select: none;
+  }
+  .caret { color: var(--faint); font-size: 10px; width: 10px; }
+  .group.collapsed .caret { transform: rotate(-90deg); }
   .group-title {
     font-size: 12px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .06em; color: var(--dim); margin-bottom: 8px;
+    letter-spacing: .06em; color: var(--dim);
   }
-  .group-note { font-size: 12px; color: var(--faint); margin: -4px 0 8px; }
-  .group.lowkey { opacity: .62; }
+  .group-count { color: var(--faint); font-weight: 500; }
+  .bulk {
+    margin-left: auto; background: transparent; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 3px 9px; font-size: 11px; cursor: pointer;
+  }
+  .bulk:hover { color: var(--text); border-color: var(--dim); }
+  .group-note { font-size: 12px; color: var(--faint); margin: -4px 0 8px 18px; }
+  .group.collapsed .group-body, .group.collapsed .group-note { display: none; }
 
-  .row {
-    display: flex; align-items: center; gap: 12px;
+  /* Cards/rows */
+  .row, .repo-card {
     background: var(--card); border: 1px solid var(--line);
-    border-radius: 9px; padding: 12px 14px; margin-bottom: 8px;
+    border-radius: 9px; margin-bottom: 8px;
   }
-  .row.wait { border-left: 3px solid var(--wait); }
-  .row.stall { border-left: 3px solid var(--stall); }
-  .row.stuck { border-left: 3px solid var(--stuck); }
-  .row.active { border-left: 3px solid var(--active); }
+  .row.wait,   .repo-card.wait   { border-left: 3px solid var(--wait); }
+  .row.stall,  .repo-card.stall  { border-left: 3px solid var(--stall); }
+  .row.stuck,  .repo-card.stuck  { border-left: 3px solid var(--stuck); }
+  .row.fresh,  .repo-card.fresh  { border-left: 3px solid var(--fresh); }
+  .row.active, .repo-card.active { border-left: 3px solid var(--active); }
 
-  .label { font-weight: 600; }
-  .meta { font-size: 12px; color: var(--dim); margin-top: 1px; }
-  .grow { flex: 1; min-width: 0; }
-  .time { font-variant-numeric: tabular-nums; color: var(--dim); font-size: 13px; }
+  .row { display: flex; align-items: flex-start; gap: 14px; padding: 12px 14px; }
+  .row:hover { background: var(--card-hover); }
+  .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .label { font-weight: 650; font-size: 14px; letter-spacing: -.01em; }
+  .sub {
+    font-size: 12px; color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .path {
+    font-size: 11px; color: var(--ghost);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .stats {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 11px; color: var(--faint); margin-top: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .stats .sep { color: var(--line); }
+  .actions {
+    display: flex; flex-direction: column; align-items: flex-end;
+    gap: 6px; flex-shrink: 0;
+  }
+  .since {
+    font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
 
-  button {
+  /* Activity sparkline — last 30 min, 15 buckets of 2 min each. */
+  .spark { display: block; }
+  .spark rect { fill: var(--dim); opacity: .55; }
+  .row.active   .spark rect, .repo-card.active   .spark rect { fill: var(--active); opacity: .85; }
+  .row.fresh    .spark rect, .repo-card.fresh    .spark rect { fill: var(--fresh); opacity: .8; }
+  .row.wait     .spark rect, .repo-card.wait     .spark rect { fill: var(--wait);   opacity: .7; }
+  .row.stuck    .spark rect, .repo-card.stuck    .spark rect { fill: var(--stuck);  opacity: .65; }
+  .row.stall    .spark rect, .repo-card.stall    .spark rect { fill: var(--stall);  opacity: .55; }
+
+  /* Status pill in title row. */
+  .pill {
+    font-size: 10px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 999px;
+    border: 1px solid currentColor; line-height: 1.4;
+  }
+  .pill.active { color: var(--active); }
+  .pill.fresh  { color: var(--fresh); }
+  .pill.wait   { color: var(--wait); }
+  .pill.stuck  { color: var(--stuck); }
+  .pill.stall  { color: var(--stall); }
+
+  .repo-head { padding: 12px 14px 6px; }
+  .repo-head .label { font-size: 14px; }
+  .repo-head .count { font-size: 12px; color: var(--faint); font-weight: 500; }
+  .repo-head .path { margin-top: 2px; }
+  .subrow {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 10px 14px; border-top: 1px solid var(--line);
+  }
+  .subrow:hover { background: var(--card-hover); }
+
+  button.action {
     background: transparent; color: var(--dim);
     border: 1px solid var(--line); border-radius: 6px;
-    padding: 5px 10px; font-size: 12px; cursor: pointer;
+    padding: 4px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
   }
-  button:hover { color: var(--text); border-color: var(--dim); }
+  button.action:hover { color: var(--text); border-color: var(--dim); }
 
-  .empty { color: var(--faint); margin-top: 30px; text-align: center; }
+  .clickable { cursor: pointer; }
+  .row.clickable:hover { border-color: var(--dim); }
+  .subrow.clickable:hover { background: var(--card-hover); }
+  .open-hint { font-size: 12px; color: var(--faint); white-space: nowrap; }
+  .clickable:hover .open-hint { color: var(--dim); }
+
+  /* Live pulse for active sessions. */
+  .row.active .label::before, .repo-card.active .repo-head .label::before {
+    content: ""; display: inline-block; width: 7px; height: 7px;
+    background: var(--active); border-radius: 50%; margin-right: 8px;
+    vertical-align: 1px; animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%     { opacity: .35; transform: scale(.85); }
+  }
+
+  .empty {
+    color: var(--faint); margin-top: 40px; text-align: center;
+    padding: 30px; border: 1px dashed var(--line); border-radius: 9px;
+  }
+  .empty.in-section { margin-top: 0; padding: 14px; font-size: 13px; }
+
+  /* Undo toast */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px; z-index: 20;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 9px; padding: 10px 14px; display: flex;
+    gap: 14px; align-items: center; font-size: 13px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  }
+  .toast .undo {
+    background: transparent; color: var(--wait); border: 0;
+    font: inherit; font-weight: 600; cursor: pointer; padding: 0;
+  }
 </style>
 </head>
 <body>
@@ -59,17 +223,44 @@
   <h1>Claude Code Session Tracker</h1>
   <div class="headline" id="headline">Loading…</div>
   <div class="updated" id="updated"></div>
+  <div class="controls" id="controls"></div>
 </header>
 <main id="main"></main>
+<div id="toast"></div>
 
 <script>
+// Status definitions: order here drives sort and section order on the page.
+// Active / Recently finished sit on top so they're reachable without scrolling
+// past a long historical list.
 const GROUPS = [
+  { status: "active",         cls: "active", title: "Active" },
+  { status: "just_finished",  cls: "fresh",  title: "Recently finished",
+    note: "Claude just replied — you're probably still on this tab." },
   { status: "waiting_on_you", cls: "wait",   title: "Waiting on you" },
-  { status: "likely_stalled", cls: "stall",  title: "Likely stalled" },
   { status: "possibly_stuck", cls: "stuck",  title: "Possibly stuck",
-    note: "Quiet a while — may be busy in a long task, or stuck.", lowkey: true },
-  { status: "active",         cls: "active", title: "Active", lowkey: true },
+    note: "Quiet a while — may be busy in a long task, or stuck.",
+    lowkey: true, bulkDone: true },
+  { status: "likely_stalled", cls: "stall",  title: "Likely stalled",
+    lowkey: true, bulkDone: true },
 ];
+const G_BY_STATUS = Object.fromEntries(GROUPS.map(g => [g.status, g]));
+// Also offer bulk-done on the "Waiting on you" tier — most-clear cleanup case.
+G_BY_STATUS.waiting_on_you.bulkDone = true;
+
+// View state — chip filter, text filter, per-section collapse.
+const state = {
+  statusFilter: null,           // string or null
+  q: "",                        // text filter, lowercased
+  collapsed: loadCollapsed(),   // {status: bool}
+};
+
+function loadCollapsed() {
+  try { return JSON.parse(localStorage.collapsedSections || "{}"); }
+  catch { return {}; }
+}
+function saveCollapsed() {
+  localStorage.collapsedSections = JSON.stringify(state.collapsed);
+}
 
 function humanTime(s) {
   if (s < 60) return s + "s";
@@ -78,31 +269,354 @@ function humanTime(s) {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
-async function markDone(sessionId) {
-  await fetch("/api/done", {
+function relativeAge(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const s = Math.max(0, Math.round((Date.now() - d) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+// --- toast / undo ---------------------------------------------------------
+
+let toastTimer = null;
+function showToast(message, sessionIds) {
+  const el = document.getElementById("toast");
+  el.innerHTML = "";
+  const t = document.createElement("div");
+  t.className = "toast";
+  const txt = document.createElement("span");
+  txt.textContent = message;
+  const undo = document.createElement("button");
+  undo.className = "undo";
+  undo.textContent = "Undo";
+  undo.onclick = async () => {
+    clearTimeout(toastTimer);
+    el.innerHTML = "";
+    await fetch("/api/undo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_ids: sessionIds }),
+    });
+    refresh();
+  };
+  t.append(txt, undo);
+  el.appendChild(t);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.innerHTML = ""; }, 5000);
+}
+
+async function markDone(sessionIds, label) {
+  const ids = Array.isArray(sessionIds) ? sessionIds : [sessionIds];
+  const res = await fetch("/api/done", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId }),
+    body: JSON.stringify({ session_ids: ids }),
   });
+  const data = await res.json();
+  const done = data.done || ids;
+  if (done.length) {
+    const msg = label || (done.length === 1
+      ? "1 session marked done."
+      : `${done.length} sessions marked done.`);
+    showToast(msg, done);
+  }
   refresh();
 }
 
-function rowEl(s, cls) {
+// --- atoms ---------------------------------------------------------------
+
+// Map of cls -> human pill label (uppercased by CSS).
+const PILL_LABEL = {
+  active: "Active", fresh: "Recent", wait: "Waiting",
+  stuck: "Stuck",   stall: "Stalled",
+};
+
+// What the last hook event was, in plain English.
+const LAST_VERB = {
+  session_start: "opened",
+  tool_activity: "ran a tool",
+  turn_end: "finished a turn",
+};
+function lastVerb(type) { return LAST_VERB[type] || "had activity"; }
+
+// Tidy a long absolute path: "/Users/rohit/projects/x" -> "~/projects/x".
+function shortPath(p) {
+  return p ? p.replace(/^\/Users\/[^/]+/, "~") : "";
+}
+
+function pill(cls) {
+  const el = document.createElement("span");
+  el.className = "pill " + cls;
+  el.textContent = PILL_LABEL[cls] || cls;
+  return el;
+}
+
+// Inline SVG sparkline over the last 30 min (15 buckets of 2 min each).
+// Empty buckets are skipped so a sparse session shows actual rhythm, not noise.
+function sparklineSVG(buckets) {
+  buckets = buckets || [];
+  const w = 76, h = 18, n = buckets.length || 15;
+  const max = Math.max(1, ...buckets);
+  const bw = (w - (n - 1)) / n;
+  let svg = `<svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">`;
+  buckets.forEach((v, i) => {
+    if (!v) return;
+    const bh = Math.max(1.4, (v / max) * h);
+    const x = i * (bw + 1);
+    svg += `<rect x="${x.toFixed(2)}" y="${(h - bh).toFixed(2)}" `
+        + `width="${bw.toFixed(2)}" height="${bh.toFixed(2)}" rx=".8"/>`;
+  });
+  return svg + "</svg>";
+}
+
+function statsRow(s, { includeOpened = false } = {}) {
+  const wrap = document.createElement("div");
+  wrap.className = "stats";
+  wrap.innerHTML = sparklineSVG(s.activity);
+  const parts = [
+    `engaged ${humanTime(s.engaged_seconds || 0)}`,
+    `${s.event_count || 0} events`,
+  ];
+  if (includeOpened) parts.push(`opened ${relativeAge(s.started_at)}`);
+  for (const txt of parts) {
+    const sep = document.createElement("span");
+    sep.className = "sep"; sep.textContent = "·";
+    const span = document.createElement("span");
+    span.textContent = txt;
+    wrap.append(sep, span);
+  }
+  return wrap;
+}
+
+function doneButton(sessionId) {
+  const b = document.createElement("button");
+  b.className = "action";
+  b.textContent = "Mark done";
+  b.onclick = (e) => { e.stopPropagation(); markDone(sessionId); };
+  return b;
+}
+
+function actionsCol(s) {
+  const col = document.createElement("div");
+  col.className = "actions";
+  const since = document.createElement("div");
+  since.className = "since";
+  since.textContent = humanTime(s.seconds_in_state || 0);
+  col.append(since, doneButton(s.session_id));
+  return col;
+}
+
+function makeFocusable(el, s) {
+  if (!s.focusable || !s.focus_url) return;
+  el.classList.add("clickable");
+  el.title = "Focus this window in VSCode";
+  el.onclick = (e) => {
+    if (e.target.closest("button")) return;  // let the button handle its own
+    window.location.href = s.focus_url;
+  };
+}
+
+// Sole occupant of its repo — repo name is the title.
+function singleRow(s, cls) {
   const row = document.createElement("div");
   row.className = "row " + cls;
-  row.innerHTML = `
-    <div class="grow">
-      <div class="label"></div>
-      <div class="meta"></div>
-    </div>
-    <div class="time">${humanTime(s.seconds_in_state)}</div>
-    <button>Mark done</button>`;
-  row.querySelector(".label").textContent = s.label;
-  row.querySelector(".meta").textContent =
-    s.cwd ? s.cwd : s.session_id.slice(0, 8);
-  row.querySelector("button").onclick = () => markDone(s.session_id);
+
+  const grow = document.createElement("div");
+  grow.className = "grow";
+
+  const title = document.createElement("div");
+  title.className = "title-row";
+  const lbl = document.createElement("span");
+  lbl.className = "label"; lbl.textContent = s.label;
+  title.append(lbl, pill(cls));
+  if (s.focusable) {
+    const hint = document.createElement("span");
+    hint.className = "open-hint"; hint.textContent = "↗ VSCode";
+    title.append(hint);
+  }
+
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent = `${lastVerb(s.last_event_type)} ${relativeAge(s.since)}`;
+
+  const path = document.createElement("div");
+  path.className = "path";
+  path.textContent = shortPath(s.cwd) || s.session_id.slice(0, 8);
+  path.title = s.cwd || "";
+
+  grow.append(title, sub, path, statsRow(s, { includeOpened: true }));
+  row.append(grow, actionsCol(s));
+  makeFocusable(row, s);
   return row;
 }
+
+// Several sessions in one repo — repo named once on the head, each tab below.
+function repoCard(repo, sessions, cls) {
+  const card = document.createElement("div");
+  card.className = "repo-card " + cls;
+
+  const head = document.createElement("div");
+  head.className = "repo-head";
+  const title = document.createElement("div");
+  title.className = "title-row";
+  const lbl = document.createElement("span");
+  lbl.className = "label"; lbl.textContent = repo;
+  const cnt = document.createElement("span");
+  cnt.className = "count"; cnt.textContent = `· ${sessions.length} sessions`;
+  title.append(lbl, pill(cls), cnt);
+  const path = document.createElement("div");
+  path.className = "path";
+  path.textContent = shortPath(sessions[0].cwd || "");
+  path.title = sessions[0].cwd || "";
+  head.append(title, path);
+  card.appendChild(head);
+
+  for (const s of sessions) {
+    const sub = document.createElement("div");
+    sub.className = "subrow";
+    const grow = document.createElement("div");
+    grow.className = "grow";
+    const line = document.createElement("div");
+    line.className = "sub";
+    line.textContent =
+      `opened ${relativeAge(s.started_at)} · `
+      + `${lastVerb(s.last_event_type)} ${relativeAge(s.since)}`;
+    grow.append(line, statsRow(s));
+    sub.append(grow, actionsCol(s));
+    makeFocusable(sub, s);
+    card.appendChild(sub);
+  }
+  return card;
+}
+
+// --- controls (chips + search) ------------------------------------------
+
+function renderControls(counts) {
+  const c = document.getElementById("controls");
+  c.innerHTML = "";
+  for (const g of GROUPS) {
+    const n = counts[g.status] || 0;
+    if (!n) continue;
+    const chip = document.createElement("span");
+    chip.className = "chip" + (state.statusFilter === g.status ? " on" : "");
+    chip.dataset.st = g.status;
+    chip.innerHTML = `<span class="dot"></span><span class="t"></span> <span class="n"></span>`;
+    chip.querySelector(".t").textContent = g.title;
+    chip.querySelector(".n").textContent = n;
+    chip.onclick = () => {
+      state.statusFilter =
+        state.statusFilter === g.status ? null : g.status;
+      refresh();
+    };
+    c.appendChild(chip);
+  }
+  const input = document.createElement("input");
+  input.className = "search";
+  input.type = "search";
+  input.placeholder = "Filter by repo…";
+  input.value = state.q;
+  input.oninput = (e) => {
+    state.q = e.target.value.trim().toLowerCase();
+    renderSections(window._lastData);  // re-render without refetching
+  };
+  c.appendChild(input);
+}
+
+// --- sections ------------------------------------------------------------
+
+function renderSections(data) {
+  if (!data) return;
+  const main = document.getElementById("main");
+  main.innerHTML = "";
+
+  const matching = data.sessions.filter(s => {
+    if (state.statusFilter && s.status !== state.statusFilter) return false;
+    if (state.q && !(s.label || "").toLowerCase().includes(state.q)
+                && !(s.cwd || "").toLowerCase().includes(state.q)) return false;
+    return true;
+  });
+
+  let rendered = 0;
+  for (const g of GROUPS) {
+    const items = matching.filter(s => s.status === g.status);
+    if (!items.length) continue;
+    rendered += items.length;
+    main.appendChild(sectionEl(g, items));
+  }
+
+  if (rendered === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = data.sessions.length
+      ? "No sessions match this filter."
+      : "No sessions tracked yet. Open a Claude Code session.";
+    main.appendChild(empty);
+  }
+}
+
+function sectionEl(g, items) {
+  const section = document.createElement("section");
+  section.className = "group" + (g.lowkey ? " lowkey" : "");
+  if (state.collapsed[g.status]) section.classList.add("collapsed");
+
+  const head = document.createElement("div");
+  head.className = "group-head";
+  head.innerHTML = `
+    <span class="caret">▾</span>
+    <span class="group-title"></span>
+    <span class="group-count"></span>`;
+  head.querySelector(".group-title").textContent = g.title;
+  head.querySelector(".group-count").textContent = `· ${items.length}`;
+  head.onclick = (e) => {
+    if (e.target.classList.contains("bulk")) return;
+    state.collapsed[g.status] = !state.collapsed[g.status];
+    saveCollapsed();
+    renderSections(window._lastData);
+  };
+
+  if (g.bulkDone && items.length) {
+    const bulk = document.createElement("button");
+    bulk.className = "bulk";
+    bulk.textContent = `Mark all done · ${items.length}`;
+    bulk.onclick = (e) => {
+      e.stopPropagation();
+      markDone(items.map(s => s.session_id),
+        `${items.length} ${g.title.toLowerCase()} marked done.`);
+    };
+    head.appendChild(bulk);
+  }
+  section.appendChild(head);
+
+  if (g.note) {
+    const note = document.createElement("div");
+    note.className = "group-note";
+    note.textContent = g.note;
+    section.appendChild(note);
+  }
+
+  const body = document.createElement("div");
+  body.className = "group-body";
+  const byRepo = new Map();
+  for (const s of items) {
+    if (!byRepo.has(s.label)) byRepo.set(s.label, []);
+    byRepo.get(s.label).push(s);
+  }
+  for (const [repo, list] of byRepo) {
+    body.appendChild(
+      list.length === 1
+        ? singleRow(list[0], g.cls)
+        : repoCard(repo, list, g.cls)
+    );
+  }
+  section.appendChild(body);
+  return section;
+}
+
+// --- main refresh --------------------------------------------------------
 
 async function refresh() {
   let data;
@@ -112,38 +626,12 @@ async function refresh() {
     document.getElementById("headline").textContent = "Server unreachable";
     return;
   }
+  window._lastData = data;
   document.getElementById("headline").textContent = data.headline;
   document.getElementById("updated").textContent =
     "updated " + new Date(data.generated_at).toLocaleTimeString();
-
-  const main = document.getElementById("main");
-  main.innerHTML = "";
-
-  for (const g of GROUPS) {
-    const items = data.sessions.filter(s => s.status === g.status);
-    if (!items.length) continue;
-    const group = document.createElement("section");
-    group.className = "group" + (g.lowkey ? " lowkey" : "");
-    const title = document.createElement("div");
-    title.className = "group-title";
-    title.textContent = `${g.title} · ${items.length}`;
-    group.appendChild(title);
-    if (g.note) {
-      const note = document.createElement("div");
-      note.className = "group-note";
-      note.textContent = g.note;
-      group.appendChild(note);
-    }
-    for (const s of items) group.appendChild(rowEl(s, g.cls));
-    main.appendChild(group);
-  }
-
-  if (!data.sessions.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "No sessions tracked yet. Open a Claude Code session.";
-    main.appendChild(empty);
-  }
+  renderControls(data.counts || {});
+  renderSections(data);
 }
 
 refresh();

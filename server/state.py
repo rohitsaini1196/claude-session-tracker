@@ -9,21 +9,36 @@ certainty. See BRIEF.md.
 import os
 from datetime import datetime, timezone
 
-from config import LONG_SECONDS, SHORT_SECONDS
+from config import (
+    ENGAGED_GAP_SECONDS,
+    FRESH_SECONDS,
+    LONG_SECONDS,
+    SHORT_SECONDS,
+)
+from server.ide import is_open
 
 # Status constants, ordered by how loudly the dashboard surfaces them.
 WAITING_ON_YOU = "waiting_on_you"
 LIKELY_STALLED = "likely_stalled"
 POSSIBLY_STUCK = "possibly_stuck"
+JUST_FINISHED = "just_finished"
 ACTIVE = "active"
 
-# Sort weight: lower = higher on the dashboard.
+# Sort weight: lower = higher on the dashboard. The sessions you might want
+# to keep working on (active, just finished) sit on top so they are reachable
+# without scrolling past a long historical list; waiting still surfaces loudly
+# below them, with stuck/stalled at the bottom.
 STATUS_ORDER = {
-    WAITING_ON_YOU: 0,
-    LIKELY_STALLED: 1,
-    POSSIBLY_STUCK: 2,
-    ACTIVE: 3,
+    ACTIVE: 0,
+    JUST_FINISHED: 1,
+    WAITING_ON_YOU: 2,
+    POSSIBLY_STUCK: 3,
+    LIKELY_STALLED: 4,
 }
+
+# Statuses where "most recent first" beats "longest neglect first" within a
+# tier — for tabs you might still be driving, freshness is what you scan for.
+_FRESH_FIRST = {ACTIVE, JUST_FINISHED}
 
 
 def _parse_ts(value):
@@ -41,13 +56,56 @@ def _label_from_cwd(cwd):
     return os.path.basename(os.path.normpath(cwd)) or cwd
 
 
-def derive_session(session_id, events, marks, now=None):
+_SPARK_BUCKETS = 15
+_SPARK_BUCKET_SECONDS = 120  # 2 min × 15 = last 30 min on the sparkline
+
+
+def _activity_buckets(events, now):
+    """A 15-element histogram of event counts over the last 30 minutes."""
+    buckets = [0] * _SPARK_BUCKETS
+    window_start = now.timestamp() - _SPARK_BUCKETS * _SPARK_BUCKET_SECONDS
+    for event in events:
+        ts = _parse_ts(event.get("ts"))
+        if ts is None:
+            continue
+        offset = ts.timestamp() - window_start
+        if offset < 0:
+            continue
+        idx = int(offset // _SPARK_BUCKET_SECONDS)
+        if 0 <= idx < _SPARK_BUCKETS:
+            buckets[idx] += 1
+    return buckets
+
+
+def _engaged_seconds(events):
+    """Sum of adjacent-event intervals shorter than ENGAGED_GAP_SECONDS.
+
+    A proxy for "time actually spent on this tab" — long idle gaps are
+    excluded, but tight tool bursts and turn cycles all count.
+    """
+    total = 0.0
+    prev = None
+    for event in events:
+        ts = _parse_ts(event.get("ts"))
+        if ts is None:
+            continue
+        if prev is not None:
+            gap = (ts - prev).total_seconds()
+            if 0 < gap < ENGAGED_GAP_SECONDS:
+                total += gap
+        prev = ts
+    return int(total)
+
+
+def derive_session(session_id, events, marks, open_ws=None, now=None):
     """Derive one session's status dict, or None if it is marked done.
 
     `events` is this session's events in chronological (file) order.
+    `open_ws` is the set of workspace folders currently open in VSCode.
     """
     if not events:
         return None
+    open_ws = open_ws or set()
     now = now or datetime.now(timezone.utc)
 
     last = events[-1]
@@ -69,10 +127,24 @@ def derive_session(session_id, events, marks, now=None):
         None,
     )
 
+    # When this session started — the timestamp of its session_start event.
+    # Falls back to the first event seen if the session began before the
+    # tracker was installed. Disambiguates multiple tabs sharing one repo.
+    start_event = next(
+        (e for e in events if e.get("type") == "session_start"),
+        events[0],
+    )
+    started_at = start_event.get("ts")
+
     quiet_seconds = (now - last_ts).total_seconds()
 
     if last.get("type") == "turn_end":
-        status = WAITING_ON_YOU
+        # A turn just ended. If it was recent you are probably still at that
+        # tab; only an older turn_end is genuinely waiting on you.
+        if quiet_seconds >= FRESH_SECONDS:
+            status = WAITING_ON_YOU
+        else:
+            status = JUST_FINISHED
     elif quiet_seconds >= LONG_SECONDS:
         status = LIKELY_STALLED
     elif quiet_seconds >= SHORT_SECONDS:
@@ -84,18 +156,28 @@ def derive_session(session_id, events, marks, now=None):
     # the last event in every tier.
     seconds_in_state = (now - last_ts).total_seconds()
 
+    # Focus link — only when the workspace is already open in VSCode, so the
+    # click focuses an existing window and never spawns a new one.
+    focusable = is_open(cwd, open_ws)
+
     return {
         "session_id": session_id,
         "label": _label_from_cwd(cwd),
         "cwd": cwd,
         "status": status,
+        "started_at": started_at,
         "since": last.get("ts"),
         "seconds_in_state": int(seconds_in_state),
         "event_count": len(events),
+        "engaged_seconds": _engaged_seconds(events),
+        "last_event_type": last.get("type"),
+        "activity": _activity_buckets(events, now),
+        "focusable": focusable,
+        "focus_url": ("vscode://file" + cwd) if (focusable and cwd) else None,
     }
 
 
-def derive_all(grouped, marks, now=None):
+def derive_all(grouped, marks, open_ws=None, now=None):
     """Derive every session, drop the done ones, return dashboard-sorted.
 
     Sort: by status weight, then longest-in-state first within a tier so the
@@ -104,11 +186,20 @@ def derive_all(grouped, marks, now=None):
     now = now or datetime.now(timezone.utc)
     sessions = []
     for session_id, events in grouped.items():
-        derived = derive_session(session_id, events, marks, now=now)
+        derived = derive_session(
+            session_id, events, marks, open_ws=open_ws, now=now
+        )
         if derived is not None:
             sessions.append(derived)
 
-    sessions.sort(
-        key=lambda s: (STATUS_ORDER[s["status"]], -s["seconds_in_state"])
-    )
+    def _within(s):
+        # Active/just-finished: smallest seconds_in_state first (most recent).
+        # Waiting/stuck/stalled: largest first (longest neglect).
+        return (
+            s["seconds_in_state"]
+            if s["status"] in _FRESH_FIRST
+            else -s["seconds_in_state"]
+        )
+
+    sessions.sort(key=lambda s: (STATUS_ORDER[s["status"]], _within(s)))
     return sessions
