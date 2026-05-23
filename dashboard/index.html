@@ -343,7 +343,7 @@ const LAST_VERB = {
 };
 function lastVerb(type) { return LAST_VERB[type] || "had activity"; }
 
-// Tidy a long absolute path: "/Users/rohit/projects/x" -> "~/projects/x".
+// Tidy a long absolute path: "/Users/you/projects/x" -> "~/projects/x".
 function shortPath(p) {
   return p ? p.replace(/^\/Users\/[^/]+/, "~") : "";
 }
